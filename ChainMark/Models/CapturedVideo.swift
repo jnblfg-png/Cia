@@ -14,8 +14,14 @@ struct CapturedVideo: Identifiable, Codable {
     let gpsLongitude: Double?
     let gpsAccuracy: Double?
     
-    /// SHA-256 hash of the video file (computed via CryptoKit)
+    /// Combined evidence hash (SHA-256 of file hash + metadata)
     let sha256Hash: String?
+    
+    /// Secure Enclave signature of the SHA-256 hash (DER-encoded, base64)
+    let secureEnclaveSignature: String?
+    
+    /// Secure Enclave public key fingerprint
+    let enclaveKeyFingerprint: String?
     
     /// Number of GPS waypoints captured during recording
     let gpsWaypointCount: Int
@@ -31,6 +37,8 @@ struct CapturedVideo: Identifiable, Codable {
         gpsLongitude: Double? = nil,
         gpsAccuracy: Double? = nil,
         sha256Hash: String? = nil,
+        secureEnclaveSignature: String? = nil,
+        enclaveKeyFingerprint: String? = nil,
         gpsWaypointCount: Int = 0
     ) {
         self.id = id
@@ -43,7 +51,19 @@ struct CapturedVideo: Identifiable, Codable {
         self.gpsLongitude = gpsLongitude
         self.gpsAccuracy = gpsAccuracy
         self.sha256Hash = sha256Hash
+        self.secureEnclaveSignature = secureEnclaveSignature
+        self.enclaveKeyFingerprint = enclaveKeyFingerprint
         self.gpsWaypointCount = gpsWaypointCount
+    }
+    
+    /// True if the evidence has both SHA-256 hash and Secure Enclave signature
+    var isFullySealed: Bool {
+        sha256Hash != nil && secureEnclaveSignature != nil
+    }
+    
+    /// True if the evidence has at least a SHA-256 hash
+    var isHashed: Bool {
+        sha256Hash != nil
     }
     
     // MARK: - Display Helpers
@@ -83,7 +103,9 @@ struct CapturedVideo: Identifiable, Codable {
         return String(hash.prefix(16)) + "..."
     }
     
-    var hashStatus: String {
-        sha256Hash != nil ? "Sealed" : "Pending"
+    var sealStatusString: String {
+        if isFullySealed { return "Sealed & Signed" }
+        if isHashed { return "Hashed" }
+        return "Pending"
     }
 }

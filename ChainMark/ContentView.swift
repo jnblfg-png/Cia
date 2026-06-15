@@ -167,6 +167,8 @@ struct ContentView: View {
             return "Burning timestamp overlay..."
         } else if progress < 0.9 {
             return "Computing SHA-256 hash..."
+        } else if progress < 1.0 {
+            return "Signing with Secure Enclave..."
         } else {
             return "Finalizing metadata..."
         }
