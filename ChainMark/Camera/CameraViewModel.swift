@@ -2,51 +2,6 @@ import SwiftUI
 import AVFoundation
 import CoreLocation
 
-/// Represents a single captured video recording with its metadata
-struct CapturedVideo: Identifiable, Codable {
-    let id: UUID
-    let fileName: String
-    let filePath: String
-    let duration: TimeInterval
-    let captureDate: Date
-    let fileSize: Int64
-    
-    /// GPS location at start of recording
-    let gpsLatitude: Double?
-    let gpsLongitude: Double?
-    let gpsAccuracy: Double?
-    
-    var formattedDate: String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: captureDate)
-    }
-    
-    var formattedDuration: String {
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = [.hour, .minute, .second]
-        formatter.unitsStyle = .positional
-        formatter.zeroFormattingBehavior = .pad
-        return formatter.string(from: duration) ?? "00:00"
-    }
-    
-    var formattedFileSize: String {
-        let formatters = [
-            (1_073_741_824, "GB"),
-            (1_048_576, "MB"),
-            (1_024, "KB")
-        ]
-        for (threshold, unit) in formatters {
-            if fileSize >= threshold {
-                let value = Double(fileSize) / Double(threshold)
-                return String(format: "%.1f %@", value, unit)
-            }
-        }
-        return "\(fileSize) B"
-    }
-}
-
 /// Errors from the camera capture system
 enum CameraError: LocalizedError {
     case cameraUnavailable
@@ -54,6 +9,7 @@ enum CameraError: LocalizedError {
     case permissionDenied
     case captureFailed(String)
     case storageFailed(String)
+    case overlayFailed(String)
     
     var errorDescription: String? {
         switch self {
@@ -67,15 +23,23 @@ enum CameraError: LocalizedError {
             return "Capture failed: \(reason)"
         case .storageFailed(let reason):
             return "Storage failed: \(reason)"
+        case .overlayFailed(let reason):
+            return "Timestamp overlay failed: \(reason)"
         }
     }
 }
 
-/// Manages the AVCaptureSession for video recording with GPS metadata
+/// Manages the AVCaptureSession for video recording with:
+/// - GPS capture at start, during (every 30s), and end
+/// - Burned-in timestamp overlay on the video
+/// - CryptoKit SHA-256 hashing on completion
 final class CameraViewModel: NSObject, ObservableObject {
+    
     // MARK: - Published State
     @Published var isRecording = false
     @Published var isSessionRunning = false
+    @Published var isProcessingOverlay = false
+    @Published var overlayProgress: Float = 0
     @Published var error: CameraError?
     @Published var recordedVideos: [CapturedVideo] = []
     @Published var currentGPSAccuracy: Double = 0
@@ -97,6 +61,12 @@ final class CameraViewModel: NSObject, ObservableObject {
     
     // Start location at recording start
     private var recordingStartLocation: CLLocation?
+    
+    // MARK: - GPS Waypoint Tracking
+    private let gpsCaptureInterval: TimeInterval = 30 // Every 30 seconds
+    private var gpsWaypoints = GPSWaypointCollection()
+    private var gpsTimer: DispatchSourceTimer?
+    private var lastWaypointCaptureOffset: TimeInterval = 0
     
     // MARK: - Location
     private let locationManager = CLLocationManager()
@@ -236,8 +206,15 @@ final class CameraViewModel: NSObject, ObservableObject {
         guard let movieOutput = movieFileOutput, !movieOutput.isRecording else { return }
         guard isSessionRunning else { return }
         
+        // Reset GPS waypoints for this recording session
+        gpsWaypoints = GPSWaypointCollection()
+        lastWaypointCaptureOffset = 0
+        
         // Capture starting location
         recordingStartLocation = lastLocation
+        if let location = lastLocation {
+            gpsWaypoints.addWaypoint(offset: 0, location: location)
+        }
         
         // Generate output file URL in app-private storage
         let fileName = "CM_\(ISO8601DateFormatter().string(from: Date()))_\(UUID().uuidString.prefix(8)).mov"
@@ -254,6 +231,9 @@ final class CameraViewModel: NSObject, ObservableObject {
         
         movieOutput.startRecording(to: outputURL, recordingDelegate: self)
         
+        // Start periodic GPS capture
+        startGPSTimer()
+        
         withAnimation {
             isRecording = true
         }
@@ -263,6 +243,15 @@ final class CameraViewModel: NSObject, ObservableObject {
     func stopRecording() {
         guard let movieOutput = movieFileOutput, movieOutput.isRecording else { return }
         movieOutput.stopRecording()
+        
+        // Stop periodic GPS timer
+        stopGPSTimer()
+        
+        // Capture final waypoint
+        if let location = lastLocation {
+            let offset = Date().timeIntervalSince(recordingStartDate ?? Date())
+            gpsWaypoints.addWaypoint(offset: offset, location: location)
+        }
         
         withAnimation {
             isRecording = false
@@ -278,12 +267,152 @@ final class CameraViewModel: NSObject, ObservableObject {
         }
     }
     
+    // MARK: - Periodic GPS Capture
+    
+    /// Start a timer that captures GPS waypoints every 30 seconds during recording
+    private func startGPSTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .background))
+        timer.schedule(deadline: .now() + gpsCaptureInterval, repeating: gpsCaptureInterval)
+        timer.setEventHandler { [weak self] in
+            guard let self = self,
+                  let location = self.lastLocation,
+                  let startDate = self.recordingStartDate else { return }
+            
+            let offset = Date().timeIntervalSince(startDate)
+            
+            // Only capture if enough time has passed since last capture
+            guard offset - self.lastWaypointCaptureOffset >= self.gpsCaptureInterval - 1 else { return }
+            
+            self.gpsWaypoints.addWaypoint(offset: offset, location: location)
+            self.lastWaypointCaptureOffset = offset
+            
+            DispatchQueue.main.async {
+                // Update GPS display with latest waypoint info
+                self.currentGPSLatitude = location.coordinate.latitude
+                self.currentGPSLongitude = location.coordinate.longitude
+                self.currentGPSAccuracy = location.horizontalAccuracy
+            }
+        }
+        self.gpsTimer = timer
+        timer.resume()
+    }
+    
+    /// Stop the periodic GPS timer
+    private func stopGPSTimer() {
+        gpsTimer?.cancel()
+        gpsTimer = nil
+    }
+    
+    // MARK: - Post-Processing Pipeline (Timestamp Overlay + SHA-256)
+    
+    /// Process the recorded video: burn timestamp overlay and compute SHA-256 hash
+    private func processRecordedVideo(at fileURL: URL, startDate: Date) async {
+        await MainActor.run {
+            self.isProcessingOverlay = true
+            self.overlayProgress = 0
+        }
+        
+        // Step 1: Burn timestamp overlay
+        do {
+            _ = try await VideoTimestampOverlay.burnTimestamp(
+                sourceURL: fileURL,
+                startDate: startDate,
+                progressHandler: { progress in
+                    Task { @MainActor in
+                        self.overlayProgress = progress * 0.7 // 70% of progress for overlay
+                    }
+                }
+            )
+        } catch {
+            // Log the error but continue — timestamp overlay is important but non-fatal
+            print("Warning: Timestamp overlay failed: \(error.localizedDescription)")
+            // The raw video without overlay is still valid evidence
+        }
+        
+        await MainActor.run {
+            self.overlayProgress = 0.7
+        }
+        
+        // Step 2: Compute SHA-256 hash
+        let sha256Hash = CryptoManager.sha256HashOfFile(at: fileURL)
+        
+        await MainActor.run {
+            self.overlayProgress = 0.9
+        }
+        
+        // Step 3: Compute final hash
+        let waypointsDict = gpsWaypoints.toDictionary()
+        let metadata = CryptoManager.buildMetadataJSON(
+            fileName: fileURL.lastPathComponent,
+            fileSize: 0, // Will be updated below
+            sha256Hash: sha256Hash ?? "ERROR",
+            duration: Date().timeIntervalSince(startDate),
+            captureStartDate: startDate,
+            gpsWaypoints: waypointsDict
+        )
+        
+        // Get actual file size
+        let fileSize: Int64
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+           let size = attributes[.size] as? Int64 {
+            fileSize = size
+        } else {
+            fileSize = 0
+        }
+        
+        // Add file size to metadata
+        var finalMetadata = metadata
+        finalMetadata["fileSizeBytes"] = fileSize
+        
+        // Step 4: Save metadata
+        let metadataJSON: String
+        if let jsonData = try? JSONSerialization.data(withJSONObject: finalMetadata, options: .prettyPrinted),
+           let jsonStr = String(data: jsonData, encoding: .utf8) {
+            metadataJSON = jsonStr
+            storageManager.saveMetadata(finalMetadata, for: fileURL.lastPathComponent)
+        } else {
+            metadataJSON = "{}"
+        }
+        
+        // Step 5: Compute combined evidence hash (binds file + metadata)
+        let combinedHash = sha256Hash.map { fileHash in
+            CryptoManager.combinedEvidenceHash(fileHash: fileHash, metadataJSON: metadataJSON)
+        }
+        
+        await MainActor.run {
+            self.overlayProgress = 1.0
+            
+            // Get start location
+            let startLocation = self.gpsWaypoints.startWaypoint
+            
+            // Create captured video entry with full metadata
+            let duration = Date().timeIntervalSince(startDate)
+            let video = CapturedVideo(
+                id: UUID(),
+                fileName: fileURL.lastPathComponent,
+                filePath: fileURL.path,
+                duration: duration,
+                captureDate: startDate,
+                fileSize: fileSize,
+                gpsLatitude: startLocation?.latitude,
+                gpsLongitude: startLocation?.longitude,
+                gpsAccuracy: startLocation?.accuracy,
+                sha256Hash: combinedHash,
+                gpsWaypointCount: self.gpsWaypoints.count
+            )
+            
+            self.recordedVideos.append(video)
+            self.isProcessingOverlay = false
+        }
+    }
+    
     // MARK: - Cleanup
     
     deinit {
         if captureSession.isRunning {
             captureSession.stopRunning()
         }
+        stopGPSTimer()
         locationManager.stopUpdatingLocation()
     }
 }
@@ -300,36 +429,11 @@ extension CameraViewModel: AVCaptureFileOutputRecordingDelegate {
             return
         }
         
-        // Get file attributes
-        let fileSize: Int64
-        if let attributes = try? FileManager.default.attributesOfItem(atPath: outputFileURL.path),
-           let size = attributes[.size] as? Int64 {
-            fileSize = size
-        } else {
-            fileSize = 0
-        }
+        guard let startDate = recordingStartDate else { return }
         
-        // Get duration
-        let duration = Date().timeIntervalSince(recordingStartDate ?? Date())
-        
-        // Record GPS at start
-        let startLocation = recordingStartLocation ?? lastLocation
-        
-        // Create captured video entry
-        let video = CapturedVideo(
-            id: UUID(),
-            fileName: outputFileURL.lastPathComponent,
-            filePath: outputFileURL.path,
-            duration: duration,
-            captureDate: recordingStartDate ?? Date(),
-            fileSize: fileSize,
-            gpsLatitude: startLocation?.coordinate.latitude,
-            gpsLongitude: startLocation?.coordinate.longitude,
-            gpsAccuracy: startLocation?.horizontalAccuracy
-        )
-        
-        DispatchQueue.main.async { [weak self] in
-            self?.recordedVideos.append(video)
+        // Process the video asynchronously (timestamp overlay + SHA-256)
+        Task {
+            await processRecordedVideo(at: outputFileURL, startDate: startDate)
         }
         
         // Reset recording state

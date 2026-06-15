@@ -2,7 +2,7 @@ import SwiftUI
 import AVFoundation
 
 /// Main content view for the ChainMark iOS app
-/// Provides a live camera preview with recording controls and GPS status
+/// Provides a live camera preview with recording controls, GPS status, and post-processing progress
 struct ContentView: View {
     @EnvironmentObject private var cameraViewModel: CameraViewModel
     @State private var showPermissionAlert = false
@@ -24,6 +24,11 @@ struct ContentView: View {
                     gpsStatusBar
                     
                     Spacer()
+                    
+                    // Post-processing overlay
+                    if cameraViewModel.isProcessingOverlay {
+                        processingOverlay
+                    }
                     
                     // Recording controls at bottom
                     recordingControls
@@ -59,6 +64,12 @@ struct ContentView: View {
             Button("OK") {}
         } message: {
             Text(errorMessage)
+        }
+        .onChange(of: cameraViewModel.error?.errorDescription ?? "") { newValue in
+            if !newValue.isEmpty {
+                errorMessage = newValue
+                showErrorAlert = true
+            }
         }
     }
     
@@ -117,6 +128,50 @@ struct ContentView: View {
         return .red
     }
     
+    // MARK: - Post-Processing Overlay
+    
+    private var processingOverlay: some View {
+        VStack(spacing: 12) {
+            // Processing card
+            VStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "lock.shield.fill")
+                        .foregroundColor(.yellow)
+                        .font(.system(size: 14))
+                    Text("Sealing Evidence...")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.white)
+                }
+                
+                // Progress bar
+                ProgressView(value: cameraViewModel.overlayProgress, total: 1.0)
+                    .progressViewStyle(LinearProgressViewStyle(tint: .yellow))
+                    .frame(width: 200)
+                
+                Text(processingStatusText)
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.6))
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+            .background(Color.black.opacity(0.75))
+            .cornerRadius(12)
+            .padding(.horizontal, 40)
+        }
+    }
+    
+    private var processingStatusText: String {
+        let progress = cameraViewModel.overlayProgress
+        if progress < 0.7 {
+            return "Burning timestamp overlay..."
+        } else if progress < 0.9 {
+            return "Computing SHA-256 hash..."
+        } else {
+            return "Finalizing metadata..."
+        }
+    }
+    
     // MARK: - Recording Controls
     
     private var recordingControls: some View {
@@ -128,7 +183,7 @@ struct ContentView: View {
                 ZStack {
                     // Outer ring
                     Circle()
-                        .stroke(Color.white, lineWidth: 4)
+                        .stroke(cameraViewModel.isRecording ? Color.red : Color.white, lineWidth: 4)
                         .frame(width: 80, height: 80)
                     
                     if cameraViewModel.isRecording {
@@ -145,12 +200,18 @@ struct ContentView: View {
                 }
             }
             .buttonStyle(PlainButtonStyle())
-            .disabled(!cameraViewModel.isSessionRunning)
+            .disabled(!cameraViewModel.isSessionRunning || cameraViewModel.isProcessingOverlay)
             
             // Session status text
-            Text(cameraViewModel.isRecording ? "Recording..." : "Tap to Record")
-                .font(.caption)
-                .foregroundColor(.white.opacity(0.7))
+            if cameraViewModel.isProcessingOverlay {
+                Text("Processing...")
+                    .font(.caption)
+                    .foregroundColor(.yellow)
+            } else {
+                Text(cameraViewModel.isRecording ? "Recording..." : "Tap to Record")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
+            }
         }
         .padding(.bottom, 40)
     }
