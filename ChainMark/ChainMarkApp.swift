@@ -6,8 +6,22 @@ struct ChainMarkApp: App {
     
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environmentObject(cameraViewModel)
+            TabView {
+                // Tab 1: Camera / Capture
+                ContentView()
+                    .tabItem {
+                        Label("Camera", systemImage: "camera.fill")
+                    }
+                
+                // Tab 2: Evidence Timeline
+                TimelineView()
+                    .tabItem {
+                        Label("Evidence", systemImage: "list.bullet.clipboard.fill")
+                    }
+            }
+            .environmentObject(cameraViewModel)
+            .preferredColorScheme(.dark)
+            .accentColor(.yellow)
         }
     }
 }

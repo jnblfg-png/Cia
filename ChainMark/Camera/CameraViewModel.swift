@@ -379,6 +379,34 @@ final class CameraViewModel: NSObject, ObservableObject {
             CryptoManager.combinedEvidenceHash(fileHash: fileHash, metadataJSON: metadataJSON)
         }
         
+        // Step 6: Secure Enclave signing
+        // Only sign if we have a hash and Secure Enclave is available
+        var secureEnclaveSignature: String?
+        var enclaveKeyFingerprint: String?
+        
+        if let hash = combinedHash {
+            do {
+                let signature = try EnclaveManager.signHash(hash)
+                secureEnclaveSignature = signature
+                enclaveKeyFingerprint = EnclaveManager.publicKeyFingerprint
+                
+                // Add signature to saved metadata
+                var metadataWithSignature = finalMetadata
+                metadataWithSignature["secureEnclaveSignature"] = signature
+                metadataWithSignature["enclaveKeyFingerprint"] = enclaveKeyFingerprint
+                
+                // Re-save metadata with signature
+                if let jsonData = try? JSONSerialization.data(withJSONObject: metadataWithSignature, options: .prettyPrinted),
+                   let jsonStr = String(data: jsonData, encoding: .utf8) {
+                    metadataJSON = jsonStr
+                    storageManager.saveMetadata(metadataWithSignature, for: fileURL.lastPathComponent)
+                }
+            } catch {
+                // Non-fatal — evidence is still hashed even without Secure Enclave signing
+                print("Warning: Secure Enclave signing failed: \(error.localizedDescription)")
+            }
+        }
+        
         await MainActor.run {
             self.overlayProgress = 1.0
             
@@ -398,6 +426,8 @@ final class CameraViewModel: NSObject, ObservableObject {
                 gpsLongitude: startLocation?.longitude,
                 gpsAccuracy: startLocation?.accuracy,
                 sha256Hash: combinedHash,
+                secureEnclaveSignature: secureEnclaveSignature,
+                enclaveKeyFingerprint: enclaveKeyFingerprint,
                 gpsWaypointCount: self.gpsWaypoints.count
             )
             
