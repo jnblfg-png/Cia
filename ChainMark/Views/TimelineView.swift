@@ -2,17 +2,17 @@ import SwiftUI
 import AVFoundation
 
 /// Chronological timeline of all locally captured evidence
-/// Sorted newest-first with seal status indicators
+/// Premium UX with refined card design, animations, and accessibility
 struct TimelineView: View {
     @EnvironmentObject private var cameraViewModel: CameraViewModel
     @State private var selectedVideo: CapturedVideo?
     @State private var showDetail = false
-    @State private var searchText = ""
+    @State private var showCamera = false
     
     var body: some View {
         NavigationView {
             ZStack {
-                Color.black.edgesIgnoringSafeArea(.all)
+                AppColors.background.edgesIgnoringSafeArea(.all)
                 
                 if cameraViewModel.recordedVideos.isEmpty {
                     emptyStateView
@@ -20,18 +20,17 @@ struct TimelineView: View {
                     videoList
                 }
             }
-            .navigationTitle("Evidence Timeline")
-            .navigationBarTitleTextColor(.white)
+            .navigationTitle("Evidence")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    HStack(spacing: 12) {
+                    HStack(spacing: AppSpacing.medium) {
                         sealStatusBadge
-                        if !cameraViewModel.recordedVideos.isEmpty {
-                            Button(action: { showCamera = true }) {
-                                Image(systemName: "camera.fill")
-                                    .foregroundColor(.white)
-                            }
+                        Button(action: { showCamera = true }) {
+                            Image(systemName: "camera.fill")
+                                .foregroundColor(AppColors.accent)
+                                .font(.system(size: AppTypography.body))
                         }
+                        .evidenceAction(label: "Open camera")
                     }
                 }
             }
@@ -42,100 +41,125 @@ struct TimelineView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .accentColor(AppColors.accent)
     }
-    
-    @State private var showCamera = false
     
     // MARK: - Empty State
     
     private var emptyStateView: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: AppSpacing.xlarge) {
             Image(systemName: "video.slash")
-                .font(.system(size: 48))
-                .foregroundColor(.gray)
+                .font(.system(size: 52))
+                .foregroundColor(AppColors.tertiary)
             
-            Text("No Evidence Captured")
-                .font(.title2)
-                .fontWeight(.semibold)
-                .foregroundColor(.white)
-            
-            Text("Record your first video evidence\nto see it here")
-                .font(.subheadline)
-                .foregroundColor(.gray)
-                .multilineTextAlignment(.center)
+            VStack(spacing: AppSpacing.xsmall) {
+                Text("No Evidence")
+                    .font(.system(size: AppTypography.title2, weight: .semibold))
+                    .foregroundColor(AppColors.primary)
+                Text("Record your first video evidence\nto see it here")
+                    .font(.system(size: AppTypography.subheadline))
+                    .foregroundColor(AppColors.tertiary)
+                    .multilineTextAlignment(.center)
+            }
             
             Button(action: { showCamera = true }) {
                 Label("Open Camera", systemImage: "camera.fill")
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 12)
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
+                    .font(.system(size: AppTypography.body, weight: .semibold))
+                    .padding(.horizontal, AppSpacing.xxlarge)
+                    .padding(.vertical, AppSpacing.medium)
+                    .background(AppColors.accent)
+                    .foregroundColor(.black)
+                    .cornerRadius(AppSpacing.radiusMedium)
             }
+            .evidenceAction(label: "Open camera to capture evidence")
         }
+        .padding(AppSpacing.paddingScreen)
     }
     
     // MARK: - Video List
     
     private var videoList: some View {
         ScrollView {
-            LazyVStack(spacing: 8) {
+            LazyVStack(spacing: AppSpacing.small) {
                 ForEach(cameraViewModel.recordedVideos) { video in
                     TimelineRow(video: video)
                         .onTapGesture {
+                            let impact = UIImpactFeedbackGenerator(style: .light)
+                            impact.impactOccurred()
                             selectedVideo = video
                             showDetail = true
                         }
-                        .contextMenu {
-                            Button(action: {
-                                selectedVideo = video
-                                showDetail = true
-                            }) {
-                                Label("View Details", systemImage: "info.circle")
-                            }
-                            
-                            Button(action: {
-                                // Quick export from context menu
-                                let storageManager = SecureStorageManager()
-                                let metaURL = storageManager.metadataURL(for: video.fileName)
-                                let metadataJSON = try? String(contentsOf: metaURL, encoding: .utf8)
-                                
-                                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                                   let rootVC = windowScene.windows.first?.rootViewController {
-                                    EvidenceExporter.presentShareSheet(
-                                        for: video,
-                                        presenting: rootVC,
-                                        metadataJSON: metadataJSON
-                                    )
-                                }
-                            }) {
-                                Label("Export", systemImage: "square.and.arrow.up")
-                            }
-                        }
+                        .contextMenu { contextMenu(for: video) }
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(timelineAccessibilityLabel(for: video))
+                        .accessibilityHint("Tap to view details and export")
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, AppSpacing.paddingInline)
+            .padding(.vertical, AppSpacing.small)
+            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: cameraViewModel.recordedVideos.count)
+        }
+    }
+    
+    @ViewBuilder
+    private func contextMenu(for video: CapturedVideo) -> some View {
+        Button(action: {
+            selectedVideo = video
+            showDetail = true
+        }) {
+            Label("View Details", systemImage: "info.circle")
+        }
+        
+        Button(action: { quickExport(video) }) {
+            Label("Export", systemImage: "square.and.arrow.up")
+        }
+        
+        if let hash = video.sha256Hash {
+            Text("SHA-256: \(String(hash.prefix(16)))...")
+        }
+    }
+    
+    private func quickExport(_ video: CapturedVideo) {
+        let storageManager = SecureStorageManager()
+        let metaURL = storageManager.metadataURL(for: video.fileName)
+        let metadataJSON = try? String(contentsOf: metaURL, encoding: .utf8)
+        
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootVC = windowScene.windows.first?.rootViewController {
+            EvidenceExporter.presentShareSheet(
+                for: video,
+                presenting: rootVC,
+                metadataJSON: metadataJSON
+            )
         }
     }
     
     // MARK: - Seal Status Badge
     
     private var sealStatusBadge: some View {
-        let totalVideos = cameraViewModel.recordedVideos.count
-        let sealedCount = cameraViewModel.recordedVideos.filter { $0.sha256Hash != nil }.count
+        let total = cameraViewModel.recordedVideos.count
+        let sealed = cameraViewModel.recordedVideos.filter { $0.isFullySealed }.count
+        let hashed = cameraViewModel.recordedVideos.filter { $0.isHashed }.count
         
-        return HStack(spacing: 4) {
-            Image(systemName: sealedCount == totalVideos ? "lock.fill" : "lock.open")
-                .font(.system(size: 10))
-            Text("\(sealedCount)/\(totalVideos)")
-                .font(.caption2)
+        return HStack(spacing: AppSpacing.xsmall) {
+            Image(systemName: sealed == total ? "lock.fill" : "lock.open")
+                .font(.system(size: AppTypography.caption))
+            Text("\(hashed)/\(total)")
+                .font(.system(size: AppTypography.caption2, weight: .medium))
         }
-        .foregroundColor(sealedCount == totalVideos ? .green : .yellow)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(sealedCount == totalVideos ? Color.green.opacity(0.2) : Color.yellow.opacity(0.2))
-        .cornerRadius(6)
+        .foregroundColor(sealed == total ? AppColors.success : AppColors.warning)
+        .padding(.horizontal, AppSpacing.small)
+        .padding(.vertical, AppSpacing.xsmall)
+        .background((sealed == total ? AppColors.success : AppColors.warning).opacity(0.15))
+        .cornerRadius(AppSpacing.radiusSmall)
+        .accessibilityLabel("\(hashed) of \(total) items sealed")
+    }
+    
+    private func timelineAccessibilityLabel(for video: CapturedVideo) -> String {
+        let sealStatus = video.isFullySealed ? "fully sealed and signed" :
+                         video.isHashed ? "hashed" : "pending"
+        return "Evidence from \(video.formattedDate), \(video.formattedDuration), \(sealStatus)"
     }
 }
 
@@ -145,26 +169,25 @@ struct TimelineRow: View {
     let video: CapturedVideo
     
     var body: some View {
-        HStack(spacing: 12) {
-            // Video thumbnail placeholder
+        HStack(spacing: AppSpacing.medium) {
+            // Thumbnail placeholder
             ZStack {
-                Rectangle()
-                    .fill(Color.gray.opacity(0.3))
-                    .frame(width: 64, height: 48)
-                    .cornerRadius(6)
+                RoundedRectangle(cornerRadius: AppSpacing.radiusSmall)
+                    .fill(AppColors.surfaceElevated)
+                    .frame(width: 72, height: 52)
                 
                 Image(systemName: "video.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(.white.opacity(0.7))
+                    .font(.system(size: 22))
+                    .foregroundColor(AppColors.accent)
             }
             
             // Info
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: AppSpacing.xsmall) {
                 HStack {
                     Text(video.formattedDate)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
+                        .font(.system(size: AppTypography.subheadline, weight: .semibold))
+                        .foregroundColor(AppColors.primary)
+                        .lineLimit(1)
                     
                     Spacer()
                     
@@ -172,63 +195,57 @@ struct TimelineRow: View {
                 }
                 
                 Text(video.formattedDuration)
-                    .font(.caption)
-                    .foregroundColor(.gray)
+                    .font(.system(size: AppTypography.footnote))
+                    .foregroundColor(AppColors.tertiary)
+                    .monospacedDigit()
                 
-                HStack(spacing: 4) {
+                HStack(spacing: AppSpacing.xsmall) {
                     Image(systemName: "location.fill")
-                        .font(.system(size: 8))
-                        .foregroundColor(.blue)
+                        .font(.system(size: AppTypography.caption2))
+                        .foregroundColor(AppColors.info)
                     
                     if let lat = video.gpsLatitude, let lng = video.gpsLongitude {
                         Text(String(format: "%.4f, %.4f", lat, lng))
-                            .font(.caption2)
-                            .foregroundColor(.gray)
+                            .font(.system(size: AppTypography.caption, design: .monospaced))
+                            .foregroundColor(AppColors.tertiary)
+                            .lineLimit(1)
                     } else {
                         Text("No GPS")
-                            .font(.caption2)
-                            .foregroundColor(.gray)
+                            .font(.system(size: AppTypography.caption))
+                            .foregroundColor(AppColors.tertiary)
                     }
                     
                     if video.gpsWaypointCount > 0 {
                         Text("· \(video.gpsWaypointCount) pts")
-                            .font(.caption2)
-                            .foregroundColor(.gray.opacity(0.6))
+                            .font(.system(size: AppTypography.caption2))
+                            .foregroundColor(AppColors.tertiary)
                     }
                 }
             }
-            
-            Image(systemName: "chevron.right")
-                .font(.caption)
-                .foregroundColor(.gray)
         }
-        .padding(12)
-        .background(Color.white.opacity(0.08))
-        .cornerRadius(10)
+        .padding(AppSpacing.medium)
+        .background(AppColors.surface)
+        .cornerRadius(AppSpacing.radiusMedium)
+        .overlay(
+            RoundedRectangle(cornerRadius: AppSpacing.radiusMedium)
+                .stroke(video.isFullySealed ? AppColors.success.opacity(0.2) : AppColors.border, lineWidth: video.isFullySealed ? 0.5 : 0.5)
+        )
     }
     
     private var sealBadge: some View {
-        HStack(spacing: 3) {
-            if video.sha256Hash != nil {
-                Circle()
-                    .fill(Color.green)
-                    .frame(width: 6, height: 6)
-                Text("Sealed")
-                    .font(.caption2)
-                    .foregroundColor(.green)
-            } else {
-                Circle()
-                    .fill(Color.yellow)
-                    .frame(width: 6, height: 6)
-                Text("Pending")
-                    .font(.caption2)
-                    .foregroundColor(.yellow)
-            }
+        HStack(spacing: AppSpacing.xxsmall) {
+            Circle()
+                .fill(video.isFullySealed ? AppColors.success : (video.isHashed ? AppColors.warning : AppColors.tertiary))
+                .frame(width: 6, height: 6)
+            
+            Text(video.sealStatusString)
+                .font(.system(size: AppTypography.caption2, weight: .semibold))
+                .foregroundColor(video.isFullySealed ? AppColors.success : (video.isHashed ? AppColors.warning : AppColors.tertiary))
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background((video.sha256Hash != nil ? Color.green : Color.yellow).opacity(0.15))
-        .cornerRadius(4)
+        .padding(.horizontal, AppSpacing.small)
+        .padding(.vertical, AppSpacing.xxsmall)
+        .background((video.isFullySealed ? AppColors.success : (video.isHashed ? AppColors.warning : AppColors.tertiary)).opacity(0.15))
+        .cornerRadius(AppSpacing.radiusSmall)
     }
 }
 
@@ -238,276 +255,274 @@ struct VideoDetailView: View {
     let video: CapturedVideo
     @Environment(\.dismiss) private var dismiss
     @State private var metadataJSON: String?
-    @State private var showShareSheet = false
+    @State private var isExporting = false
     
     var body: some View {
         NavigationView {
-            ZStack {
-                Color.black.edgesIgnoringSafeArea(.all)
-                
-                ScrollView {
-                    VStack(spacing: 20) {
-                        // Video info card
-                        videoInfoCard
-                        
-                        // Cryptographic seal card
-                        cryptoSealCard
-                        
-                        // GPS data card
-                        gpsCard
-                        
-                        // Metadata section
-                        metadataSection
-                        
-                        // Export button
-                        exportButton
-                    }
-                    .padding()
+            ScrollView {
+                VStack(spacing: AppSpacing.large) {
+                    evidenceInfoCard
+                    cryptoSealCard
+                    gpsCard
+                    metadataCard
+                    exportButton
                 }
+                .padding()
             }
+            .background(AppColors.background.edgesIgnoringSafeArea(.all))
             .navigationTitle("Evidence Detail")
-            .navigationBarTitleTextColor(.white)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .foregroundColor(.blue)
+                    Button("Done") {
+                        let impact = UIImpactFeedbackGenerator(style: .light)
+                        impact.impactOccurred()
+                        dismiss()
+                    }
+                    .foregroundColor(AppColors.accent)
+                    .fontWeight(.semibold)
                 }
             }
-            .onAppear {
-                loadMetadata()
-            }
+            .onAppear { loadMetadata() }
         }
         .preferredColorScheme(.dark)
+        .interactiveDismissDisabled(false)
     }
     
-    // MARK: - Video Info Card
+    // MARK: - Evidence Info Card
     
-    private var videoInfoCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
+    private var evidenceInfoCard: some View {
+        VStack(alignment: .leading, spacing: AppSpacing.medium) {
             HStack {
-                Image(systemName: "video.circle.fill")
-                    .font(.system(size: 36))
-                    .foregroundColor(.blue)
+                ZStack {
+                    RoundedRectangle(cornerRadius: AppSpacing.radiusMedium)
+                        .fill(AppColors.accent.opacity(0.15))
+                        .frame(width: 48, height: 48)
+                    Image(systemName: "video.circle.fill")
+                        .font(.system(size: 28))
+                        .foregroundColor(AppColors.accent)
+                }
                 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: AppSpacing.xxsmall) {
                     Text(video.fileName)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .foregroundColor(.white)
+                        .font(.system(size: AppTypography.subheadline, weight: .medium))
+                        .foregroundColor(AppColors.primary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                     
-                    Text(video.formattedDate)
-                        .font(.caption)
-                        .foregroundColor(.gray)
+                    Text(video.captureDate, style: .date)
+                        .font(.system(size: AppTypography.footnote))
+                        .foregroundColor(AppColors.tertiary)
                 }
                 
                 Spacer()
             }
             
-            Divider().background(.gray.opacity(0.3))
+            Divider().background(AppColors.border)
             
-            detailRow(label: "Duration", value: video.formattedDuration)
-            detailRow(label: "File Size", value: video.formattedFileSize)
+            Group {
+                detailRow(label: "Duration", value: video.formattedDuration)
+                detailRow(label: "File Size", value: video.formattedFileSize)
+                detailRow(label: "Captured", value: video.captureDate.formatted(date: .omitted, time: .complete))
+            }
         }
-        .padding(16)
-        .background(Color.white.opacity(0.08))
-        .cornerRadius(12)
+        .cardStyle()
     }
     
     // MARK: - Crypto Seal Card
     
     private var cryptoSealCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: AppSpacing.medium) {
             HStack {
-                Image(systemName: "lock.shield.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(.green)
-                Text("Cryptographic Seal")
-                    .font(.headline)
-                    .foregroundColor(.white)
+                Image(systemName: video.isFullySealed ? "lock.shield.fill" : "shield")
+                    .font(.system(size: AppTypography.title3))
+                    .foregroundColor(video.isFullySealed ? AppColors.success : AppColors.warning)
+                
+                VStack(alignment: .leading, spacing: AppSpacing.xxsmall) {
+                    Text("Cryptographic Seal")
+                        .font(.system(size: AppTypography.subheadline, weight: .semibold))
+                        .foregroundColor(AppColors.primary)
+                    Text(video.sealStatusString)
+                        .font(.system(size: AppTypography.footnote))
+                        .foregroundColor(video.isFullySealed ? AppColors.success : AppColors.warning)
+                }
                 
                 Spacer()
                 
-                if video.sha256Hash != nil {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 8, height: 8)
-                        Text("SEALED")
-                            .font(.caption2)
-                            .fontWeight(.bold)
-                            .foregroundColor(.green)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.green.opacity(0.15))
-                    .cornerRadius(6)
-                }
+                statusBadge(
+                    color: video.isFullySealed ? AppColors.success : AppColors.warning,
+                    text: video.isFullySealed ? "SEALED" : "PENDING"
+                )
             }
             
-            Divider().background(.gray.opacity(0.3))
+            Divider().background(AppColors.border)
             
             if let hash = video.sha256Hash {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: AppSpacing.xsmall) {
                     Text("Combined Hash")
-                        .font(.caption)
-                        .foregroundColor(.gray)
+                        .font(.system(size: AppTypography.footnote))
+                        .foregroundColor(AppColors.tertiary)
                     Text(hash)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.green)
+                        .font(.system(size: AppTypography.monoSmall, design: .monospaced))
+                        .foregroundColor(AppColors.success)
                         .textSelection(.enabled)
+                        .padding(AppSpacing.small)
+                        .background(AppColors.success.opacity(0.05))
+                        .cornerRadius(AppSpacing.radiusSmall)
                 }
                 
-                HStack {
-                    Image(systemName: "cpu")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                    Text("Sealed with CryptoKit SHA-256")
-                        .font(.caption)
-                        .foregroundColor(.gray)
+                HStack(spacing: AppSpacing.small) {
+                    Label("SHA-256 (CryptoKit)", systemImage: "cpu")
+                        .font(.system(size: AppTypography.footnote))
+                        .foregroundColor(AppColors.tertiary)
+                    
+                    if EnclaveManager.isAvailable {
+                        Label("Secure Enclave", systemImage: "lock.fill")
+                            .font(.system(size: AppTypography.footnote))
+                            .foregroundColor(AppColors.success)
+                    }
                 }
                 
-                // Secure Enclave status
-                HStack {
-                    Image(systemName: EnclaveManager.isAvailable ? "lock.fill" : "lock.slash")
-                        .font(.caption)
-                        .foregroundColor(EnclaveManager.isAvailable ? .green : .yellow)
-                    Text(EnclaveManager.isAvailable ? "Secure Enclave available" : "Secure Enclave not available")
-                        .font(.caption)
-                        .foregroundColor(.gray)
+                if let fingerprint = video.enclaveKeyFingerprint {
+                    HStack(spacing: AppSpacing.xsmall) {
+                        Text("Signing Key:")
+                            .font(.system(size: AppTypography.footnote))
+                            .foregroundColor(AppColors.tertiary)
+                        Text(fingerprint)
+                            .font(.system(size: AppTypography.monoSmall, design: .monospaced))
+                            .foregroundColor(AppColors.signed)
+                    }
                 }
             } else {
                 HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.yellow)
-                    Text("Hashing pending")
-                        .foregroundColor(.yellow)
-                        .font(.subheadline)
+                    Image(systemName: "clock.badge.exclamationmark")
+                        .foregroundColor(AppColors.warning)
+                    Text("Seal pending — processing in progress")
+                        .font(.system(size: AppTypography.subheadline))
+                        .foregroundColor(AppColors.warning)
                 }
             }
         }
-        .padding(16)
-        .background(Color.white.opacity(0.08))
-        .cornerRadius(12)
+        .cardStyle()
     }
     
     // MARK: - GPS Card
     
     private var gpsCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: AppSpacing.medium) {
             HStack {
                 Image(systemName: "location.circle.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(.blue)
-                Text("GPS / Location")
-                    .font(.headline)
-                    .foregroundColor(.white)
+                    .font(.system(size: AppTypography.title3))
+                    .foregroundColor(AppColors.info)
+                Text("Location")
+                    .font(.system(size: AppTypography.subheadline, weight: .semibold))
+                    .foregroundColor(AppColors.primary)
                 
                 Spacer()
                 
                 if video.gpsWaypointCount > 0 {
-                    Text("\(video.gpsWaypointCount) waypoints")
-                        .font(.caption)
-                        .foregroundColor(.blue)
+                    statusBadge(color: AppColors.info, text: "\(video.gpsWaypointCount) waypoints")
                 }
             }
             
-            Divider().background(.gray.opacity(0.3))
+            Divider().background(AppColors.border)
             
             if let lat = video.gpsLatitude, let lng = video.gpsLongitude {
-                detailRow(label: "Latitude", value: String(format: "%.6f", lat))
-                detailRow(label: "Longitude", value: String(format: "%.6f", lng))
+                detailRow(label: "Latitude", value: String(format: "%.6f°", lat))
+                detailRow(label: "Longitude", value: String(format: "%.6f°", lng))
                 if let acc = video.gpsAccuracy {
-                    detailRow(label: "Accuracy", value: String(format: "±%.0f meters", acc))
+                    detailRow(label: "Accuracy", value: String(format: "±%.0f m", acc))
                 }
                 
-                // Apple Maps link
                 Button(action: openInMaps) {
-                    Label("View in Maps", systemImage: "map")
-                        .font(.caption)
-                        .foregroundColor(.blue)
+                    Label("View in Maps", systemImage: "map.fill")
+                        .font(.system(size: AppTypography.footnote, weight: .medium))
+                        .foregroundColor(AppColors.info)
+                        .padding(.top, AppSpacing.xsmall)
                 }
+                .evidenceAction(label: "Open location in Maps")
             } else {
-                Text("No GPS data recorded")
-                    .font(.subheadline)
-                    .foregroundColor(.gray)
+                HStack {
+                    Image(systemName: "location.slash")
+                        .foregroundColor(AppColors.tertiary)
+                    Text("No GPS data recorded")
+                        .font(.system(size: AppTypography.subheadline))
+                        .foregroundColor(AppColors.tertiary)
+                }
             }
         }
-        .padding(16)
-        .background(Color.white.opacity(0.08))
-        .cornerRadius(12)
+        .cardStyle()
     }
     
-    // MARK: - Metadata Section
+    // MARK: - Metadata Card
     
-    private var metadataSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+    private var metadataCard: some View {
+        VStack(alignment: .leading, spacing: AppSpacing.medium) {
             HStack {
-                Image(systemName: "doc.text.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(.gray)
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: AppTypography.title3))
+                    .foregroundColor(AppColors.tertiary)
                 Text("Raw Metadata")
-                    .font(.headline)
-                    .foregroundColor(.white)
-                
+                    .font(.system(size: AppTypography.subheadline, weight: .semibold))
+                    .foregroundColor(AppColors.primary)
                 Spacer()
             }
             
             if let json = metadataJSON {
-                Text(json)
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundColor(.gray)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                ScrollView(.horizontal, showsIndicators: true) {
+                    Text(json)
+                        .font(.system(size: AppTypography.monoSmall, design: .monospaced))
+                        .foregroundColor(AppColors.tertiary)
+                        .textSelection(.enabled)
+                }
+                .frame(maxHeight: 200)
             } else {
-                Text("Loading...")
-                    .font(.caption)
-                    .foregroundColor(.gray)
+                ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: AppColors.accent))
+                    .frame(maxWidth: .infinity)
             }
         }
-        .padding(16)
-        .background(Color.white.opacity(0.08))
-        .cornerRadius(12)
+        .cardStyle()
     }
     
     // MARK: - Export Button
     
     private var exportButton: some View {
         Button(action: {
+            let impact = UIImpactFeedbackGenerator(style: .medium)
+            impact.impactOccurred()
+            isExporting = true
+            
             if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                let rootVC = windowScene.windows.first?.rootViewController {
-                EvidenceExporter.presentShareSheet(for: video, presenting: rootVC, metadataJSON: metadataJSON)
+                EvidenceExporter.presentShareSheet(
+                    for: video,
+                    presenting: rootVC,
+                    metadataJSON: metadataJSON
+                )
+            }
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                isExporting = false
             }
         }) {
-            HStack {
-                Image(systemName: "square.and.arrow.up.fill")
-                    .font(.system(size: 16))
-                Text("Export Evidence Package")
-                    .fontWeight(.semibold)
+            HStack(spacing: AppSpacing.small) {
+                Image(systemName: isExporting ? "checkmark.circle.fill" : "square.and.arrow.up.fill")
+                    .font(.system(size: AppTypography.body))
+                Text(isExporting ? "Preparing Package…" : "Export Evidence Package")
+                    .font(.system(size: AppTypography.body, weight: .semibold))
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(Color.blue)
-            .foregroundColor(.white)
-            .cornerRadius(10)
+            .padding(.vertical, AppSpacing.large)
+            .background(AppColors.accent)
+            .foregroundColor(.black)
+            .cornerRadius(AppSpacing.radiusMedium)
         }
-        .padding(.top, 8)
+        .disabled(isExporting)
+        .evidenceAction(label: "Export evidence package", hint: "Shares video, metadata, and integrity report")
+        .padding(.top, AppSpacing.small)
     }
     
     // MARK: - Helpers
-    
-    private func detailRow(label: String, value: String) -> some View {
-        HStack {
-            Text(label)
-                .font(.caption)
-                .foregroundColor(.gray)
-                .frame(width: 80, alignment: .leading)
-            Text(value)
-                .font(.subheadline)
-                .foregroundColor(.white)
-            Spacer()
-        }
-    }
     
     private func loadMetadata() {
         let storageManager = SecureStorageManager()
@@ -521,13 +536,3 @@ struct VideoDetailView: View {
         UIApplication.shared.open(url)
     }
 }
-
-#if DEBUG
-struct TimelineView_Previews: PreviewProvider {
-    static var previews: some View {
-        TimelineView()
-            .environmentObject(CameraViewModel())
-            .preferredColorScheme(.dark)
-    }
-}
-#endif
