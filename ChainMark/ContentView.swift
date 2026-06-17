@@ -1,8 +1,9 @@
 import SwiftUI
 import AVFoundation
+import UIKit
 
 /// Main content view for the ChainMark iOS app
-/// Provides a live camera preview with recording controls, GPS status, and post-processing progress
+/// Premium UX with haptic feedback, accessibility labels, and refined visual hierarchy
 struct ContentView: View {
     @EnvironmentObject private var cameraViewModel: CameraViewModel
     @State private var showPermissionAlert = false
@@ -11,45 +12,25 @@ struct ContentView: View {
     
     var body: some View {
         ZStack {
-            // Background color
-            Color.black.edgesIgnoringSafeArea(.all)
+            AppColors.background.edgesIgnoringSafeArea(.all)
             
             if cameraViewModel.isSessionRunning {
-                // Camera preview
                 cameraPreviewSection
-                
-                // Overlays
-                VStack {
-                    // GPS status bar at top
-                    gpsStatusBar
-                    
-                    Spacer()
-                    
-                    // Post-processing overlay
-                    if cameraViewModel.isProcessingOverlay {
-                        processingOverlay
+                    .overlay(alignment: .top) { gpsStatusBar }
+                    .overlay(alignment: .bottom) { bottomControls }
+                    .overlay(alignment: .top) {
+                        if cameraViewModel.isRecording {
+                            recordingIndicator
+                                .padding(.top, AppSpacing.huge + 20)
+                        }
                     }
-                    
-                    // Recording controls at bottom
-                    recordingControls
-                    
-                    // Recording indicator
-                    if cameraViewModel.isRecording {
-                        recordingIndicator
-                            .padding(.bottom, 8)
-                    }
-                }
             } else if cameraViewModel.error != nil {
-                // Error state
                 errorStateView
             } else {
-                // Loading state
                 loadingStateView
             }
         }
-        .onAppear {
-            setupCamera()
-        }
+        .onAppear { setupCamera() }
         .alert("Camera Access Required", isPresented: $showPermissionAlert) {
             Button("Open Settings") {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
@@ -78,219 +59,244 @@ struct ContentView: View {
     private var cameraPreviewSection: some View {
         CameraPreviewView(cameraViewModel: cameraViewModel)
             .aspectRatio(3/4, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: AppSpacing.radiusLarge))
             .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                RoundedRectangle(cornerRadius: AppSpacing.radiusLarge)
+                    .stroke(AppColors.border, lineWidth: 1)
             )
-            .padding(.horizontal, 4)
+            .shadow(color: AppColors.shadowDark, radius: 20, x: 0, y: 10)
+            .padding(.horizontal, AppSpacing.paddingInline)
+            .evidenceAction(label: "Camera preview", hint: "Live camera feed for recording evidence")
     }
     
     // MARK: - GPS Status
     
     private var gpsStatusBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: AppSpacing.small) {
             Image(systemName: cameraViewModel.currentGPSAccuracy > 0 ? "location.fill" : "location.slash")
-                .foregroundColor(gpsQualityColor)
-                .font(.system(size: 12))
+                .font(.system(size: AppTypography.footnote))
+                .foregroundColor(.gpsQualityColor(accuracy: cameraViewModel.currentGPSAccuracy))
             
             if cameraViewModel.currentGPSAccuracy > 0 {
                 Text(String(format: "%.4f, %.4f",
                       cameraViewModel.currentGPSLatitude,
                       cameraViewModel.currentGPSLongitude))
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(.white)
+                    .font(.system(size: AppTypography.caption, design: .monospaced))
+                    .foregroundColor(AppColors.secondary)
                 
                 Text("±\(Int(cameraViewModel.currentGPSAccuracy))m")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(gpsQualityColor)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(gpsQualityColor.opacity(0.2))
-                    .cornerRadius(4)
+                    .font(.system(size: AppTypography.caption2, design: .monospaced, weight: .medium))
+                    .foregroundColor(.gpsQualityColor(accuracy: cameraViewModel.currentGPSAccuracy))
+                    .padding(.horizontal, AppSpacing.xsmall)
+                    .padding(.vertical, AppSpacing.xxsmall)
+                    .background(.gpsQualityColor(accuracy: cameraViewModel.currentGPSAccuracy).opacity(0.15))
+                    .cornerRadius(AppSpacing.radiusSmall)
             } else {
-                Text("No GPS Fix")
-                    .font(.system(size: 11))
-                    .foregroundColor(.yellow)
+                Text("Acquiring GPS...")
+                    .font(.system(size: AppTypography.caption))
+                    .foregroundColor(AppColors.warning)
             }
             
             Spacer()
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
+        .padding(.horizontal, AppSpacing.paddingScreen)
+        .padding(.top, AppSpacing.medium)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(gpsAccessibilityLabel)
     }
     
-    private var gpsQualityColor: Color {
-        let accuracy = cameraViewModel.currentGPSAccuracy
-        if accuracy <= 0 { return .yellow }
-        if accuracy <= 10 { return .green }
-        if accuracy <= 50 { return .orange }
-        return .red
+    private var gpsAccessibilityLabel: String {
+        if cameraViewModel.currentGPSAccuracy > 0 {
+            return "GPS location: \(String(format: "%.4f", cameraViewModel.currentGPSLatitude)), \(String(format: "%.4f", cameraViewModel.currentGPSLongitude)), accuracy \(Int(cameraViewModel.currentGPSAccuracy)) meters"
+        }
+        return "Acquiring GPS signal"
+    }
+    
+    // MARK: - Bottom Controls
+    
+    private var bottomControls: some View {
+        VStack(spacing: AppSpacing.xlarge) {
+            // Post-processing overlay
+            if cameraViewModel.isProcessingOverlay {
+                processingOverlay
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            }
+            
+            // Recording button
+            recordButton
+            
+            // Session status
+            Text(recordingStatusText)
+                .font(.system(size: AppTypography.subheadline))
+                .foregroundColor(recordingStatusColor)
+                .animation(.easeInOut(duration: 0.2), value: cameraViewModel.isRecording)
+        }
+        .padding(.bottom, AppSpacing.huge)
+    }
+    
+    private var recordButton: some View {
+        Button(action: {
+            let impact = UIImpactFeedbackGenerator(style: cameraViewModel.isRecording ? .light : .heavy)
+            impact.impactOccurred()
+            cameraViewModel.toggleRecording()
+        }) {
+            ZStack {
+                // Outer ring
+                Circle()
+                    .stroke(recordButtonRingColor, lineWidth: 4)
+                    .frame(width: 80, height: 80)
+                    .scaleEffect(cameraViewModel.isRecording ? 1.1 : 1.0)
+                
+                if cameraViewModel.isRecording {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(AppColors.error)
+                        .frame(width: 30, height: 30)
+                        .transition(.scale.combined(with: .opacity))
+                } else {
+                    Circle()
+                        .fill(AppColors.error)
+                        .frame(width: 60, height: 60)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: cameraViewModel.isRecording)
+        }
+        .buttonStyle(PlainButtonStyle())
+        .disabled(!cameraViewModel.isSessionRunning || cameraViewModel.isProcessingOverlay)
+        .evidenceAction(
+            label: cameraViewModel.isRecording ? "Stop recording" : "Start recording",
+            hint: cameraViewModel.isRecording ? "Tap to stop recording evidence" : "Tap to begin recording video evidence"
+        )
+    }
+    
+    private var recordButtonRingColor: Color {
+        if cameraViewModel.isRecording { return AppColors.error }
+        if cameraViewModel.isProcessingOverlay { return AppColors.disabled }
+        return AppColors.primary
+    }
+    
+    private var recordingStatusText: String {
+        if cameraViewModel.isProcessingOverlay { return "Sealing evidence..." }
+        if cameraViewModel.isRecording { return "Recording" }
+        return "Tap to Record"
+    }
+    
+    private var recordingStatusColor: Color {
+        if cameraViewModel.isProcessingOverlay { return AppColors.warning }
+        if cameraViewModel.isRecording { return AppColors.error }
+        return AppColors.tertiary
     }
     
     // MARK: - Post-Processing Overlay
     
     private var processingOverlay: some View {
-        VStack(spacing: 12) {
-            // Processing card
-            VStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    Image(systemName: "lock.shield.fill")
-                        .foregroundColor(.yellow)
-                        .font(.system(size: 14))
-                    Text("Sealing Evidence...")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                }
-                
-                // Progress bar
-                ProgressView(value: cameraViewModel.overlayProgress, total: 1.0)
-                    .progressViewStyle(LinearProgressViewStyle(tint: .yellow))
-                    .frame(width: 200)
-                
-                Text(processingStatusText)
-                    .font(.caption)
-                    .foregroundColor(.white.opacity(0.6))
+        VStack(spacing: AppSpacing.small) {
+            HStack(spacing: AppSpacing.small) {
+                Image(systemName: "lock.shield.fill")
+                    .foregroundColor(AppColors.warning)
+                    .font(.system(size: AppTypography.callout))
+                Text("Sealing Evidence")
+                    .font(.system(size: AppTypography.subheadline, weight: .semibold))
+                    .foregroundColor(AppColors.primary)
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 16)
-            .background(Color.black.opacity(0.75))
-            .cornerRadius(12)
-            .padding(.horizontal, 40)
+            
+            ProgressView(value: cameraViewModel.overlayProgress, total: 1.0)
+                .progressViewStyle(LinearProgressViewStyle(tint: AppColors.warning))
+                .frame(width: 200)
+            
+            Text(processingStatusText)
+                .font(.system(size: AppTypography.footnote))
+                .foregroundColor(AppColors.tertiary)
+                .animation(.none, value: cameraViewModel.overlayProgress)
         }
+        .padding(.horizontal, AppSpacing.xxlarge)
+        .padding(.vertical, AppSpacing.large)
+        .background(AppColors.surfaceDeep.opacity(0.9))
+        .cornerRadius(AppSpacing.radiusLarge)
+        .overlay(
+            RoundedRectangle(cornerRadius: AppSpacing.radiusLarge)
+                .stroke(AppColors.warning.opacity(0.2), lineWidth: 1)
+        )
+        .padding(.horizontal, AppSpacing.huge)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Sealing evidence: \(processingStatusText)")
     }
     
     private var processingStatusText: String {
         let progress = cameraViewModel.overlayProgress
-        if progress < 0.7 {
-            return "Burning timestamp overlay..."
-        } else if progress < 0.9 {
-            return "Computing SHA-256 hash..."
-        } else if progress < 1.0 {
-            return "Signing with Secure Enclave..."
-        } else {
-            return "Finalizing metadata..."
-        }
-    }
-    
-    // MARK: - Recording Controls
-    
-    private var recordingControls: some View {
-        VStack(spacing: 20) {
-            // Recording button
-            Button(action: {
-                cameraViewModel.toggleRecording()
-            }) {
-                ZStack {
-                    // Outer ring
-                    Circle()
-                        .stroke(cameraViewModel.isRecording ? Color.red : Color.white, lineWidth: 4)
-                        .frame(width: 80, height: 80)
-                    
-                    if cameraViewModel.isRecording {
-                        // Square stop button
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.red)
-                            .frame(width: 30, height: 30)
-                    } else {
-                        // Circle record button
-                        Circle()
-                            .fill(Color.red)
-                            .frame(width: 60, height: 60)
-                    }
-                }
-            }
-            .buttonStyle(PlainButtonStyle())
-            .disabled(!cameraViewModel.isSessionRunning || cameraViewModel.isProcessingOverlay)
-            
-            // Session status text
-            if cameraViewModel.isProcessingOverlay {
-                Text("Processing...")
-                    .font(.caption)
-                    .foregroundColor(.yellow)
-            } else {
-                Text(cameraViewModel.isRecording ? "Recording..." : "Tap to Record")
-                    .font(.caption)
-                    .foregroundColor(.white.opacity(0.7))
-            }
-        }
-        .padding(.bottom, 40)
+        if progress < 0.7 { return "Applying timestamp..." }
+        if progress < 0.9 { return "Computing SHA-256..." }
+        if progress < 1.0 { return "Signing with Secure Enclave..." }
+        return "Finalizing"
     }
     
     // MARK: - Recording Indicator
     
     private var recordingIndicator: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: AppSpacing.xsmall) {
             Circle()
-                .fill(Color.red)
+                .fill(AppColors.error)
                 .frame(width: 8, height: 8)
+                .opacity(cameraViewModel.isRecording ? 1 : 0)
+                .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: cameraViewModel.isRecording)
+            
             Text("REC")
-                .font(.caption)
-                .fontWeight(.bold)
-                .foregroundColor(.red)
+                .font(.system(size: AppTypography.footnote, weight: .bold))
+                .foregroundColor(AppColors.error)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Color.black.opacity(0.6))
-        .cornerRadius(12)
+        .padding(.horizontal, AppSpacing.medium)
+        .padding(.vertical, AppSpacing.small)
+        .background(AppColors.surfaceDeep.opacity(0.7))
+        .cornerRadius(AppSpacing.radiusSmall)
+        .accessibilityLabel("Recording in progress")
     }
     
     // MARK: - Loading State
     
     private var loadingStateView: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: AppSpacing.large) {
             ProgressView()
-                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                .progressViewStyle(CircularProgressViewStyle(tint: AppColors.accent))
                 .scaleEffect(1.5)
-            Text("Initializing Camera...")
-                .foregroundColor(.white.opacity(0.7))
-                .font(.subheadline)
+            Text("Initializing Camera")
+                .font(.system(size: AppTypography.subheadline))
+                .foregroundColor(AppColors.secondary)
         }
+        .accessibilityLabel("Camera initializing")
     }
     
     // MARK: - Error State
     
     private var errorStateView: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: AppSpacing.large) {
             Image(systemName: "camera.fill.badge.exclamationmark")
                 .font(.system(size: 48))
-                .foregroundColor(.yellow)
+                .foregroundColor(AppColors.warning)
             
             Text("Camera Unavailable")
-                .font(.title2)
-                .fontWeight(.semibold)
-                .foregroundColor(.white)
+                .font(.system(size: AppTypography.title3, weight: .semibold))
+                .foregroundColor(AppColors.primary)
             
             Text(cameraViewModel.error?.errorDescription ?? "Unknown error")
-                .font(.subheadline)
-                .foregroundColor(.white.opacity(0.7))
+                .font(.system(size: AppTypography.subheadline))
+                .foregroundColor(AppColors.secondary)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
+                .padding(.horizontal, AppSpacing.huge)
             
             Button("Retry") {
                 setupCamera()
             }
-            .buttonStyle(.borderedProminent)
-            .padding(.top, 8)
+            .primaryButton(color: AppColors.accent)
+            .padding(.horizontal, AppSpacing.xxxlarge)
+            .padding(.top, AppSpacing.small)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Camera error: \(cameraViewModel.error?.errorDescription ?? "Unknown")")
     }
     
     // MARK: - Setup
     
     private func setupCamera() {
-        Task {
-            await cameraViewModel.requestPermissionsAndSetup()
-        }
+        Task { await cameraViewModel.requestPermissionsAndSetup() }
     }
 }
-
-#if DEBUG
-struct ContentView_Previews: PreviewProvider {
-    static var previews: some View {
-        ContentView()
-            .environmentObject(CameraViewModel())
-            .preferredColorScheme(.dark)
-    }
-}
-#endif
