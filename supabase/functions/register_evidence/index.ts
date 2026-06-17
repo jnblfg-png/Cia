@@ -159,9 +159,16 @@ serve(async (req: Request) => {
       .select()
       .single();
 
-    if (custodyError) {
-      console.error("Failed to create custody log entry:", custodyError);
-      // Evidence was created but custody log failed — flag for audit
+    if (custodyError || !custodyEntry) {
+      // Hard error: rollback the evidence creation — custody chain integrity is mandatory
+      await supabaseAdmin.from("evidence_items").delete().eq("id", evidence.id);
+      return new Response(JSON.stringify({
+        error: "Failed to create custody log entry — evidence registration rolled back",
+        detail: custodyError?.message ?? "unknown custody error",
+      }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     return new Response(
