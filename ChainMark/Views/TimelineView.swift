@@ -55,11 +55,11 @@ struct TimelineView: View {
             }
             .alert("Delete Evidence", isPresented: $showDeleteAlert, presenting: videoToDelete) { video in
                 Button("Cancel", role: .cancel) { }
-                Button("Delete", role: .destructive) {
+                Button(deleteButtonLabel(for: video), role: .destructive) {
                     withAnimation { cameraViewModel.deleteEvidence(video) }
                 }
             } message: { video in
-                Text("Delete \"\(video.fileName)\"? The video and metadata will be permanently removed.")
+                Text(deleteMessage(for: video))
             }
             .alert("Delete All Evidence", isPresented: $showDeleteAllAlert) {
                 Button("Cancel", role: .cancel) { }
@@ -67,11 +67,41 @@ struct TimelineView: View {
                     withAnimation { cameraViewModel.deleteAllEvidence() }
                 }
             } message: {
-                Text("This will permanently delete all captured evidence.")
+                Text(deleteAllMessage)
             }
         }
         .preferredColorScheme(.dark)
         .accentColor(AppColors.accent)
+    }
+    
+    // MARK: - Deletion Policy Helpers
+    
+    /// Delete button label adapts to sealed state
+    private func deleteButtonLabel(for video: CapturedVideo) -> String {
+        video.sha256Hash != nil ? "Withdraw" : "Delete"
+    }
+    
+    /// Delete confirmation message adapts to sealed state
+    private func deleteMessage(for video: CapturedVideo) -> String {
+        if video.sha256Hash != nil {
+            return "This evidence is SEALED. Withdrawing will record a withdrawal in the custody log and remove it from the active timeline. The integrity record (hash, signature, timestamp) is preserved."
+        }
+        return "This evidence is NOT sealed. It will be permanently deleted along with all metadata."
+    }
+    
+    /// Delete All message explains both paths
+    private var deleteAllMessage: String {
+        let sealedCount = cameraViewModel.recordedVideos.filter { $0.sha256Hash != nil }.count
+        let unsealedCount = cameraViewModel.recordedVideos.count - sealedCount
+        
+        var parts: [String] = []
+        if sealedCount > 0 {
+            parts.append("\(sealedCount) sealed item(s) will be withdrawn (custody log preserved)")
+        }
+        if unsealedCount > 0 {
+            parts.append("\(unsealedCount) unsealed item(s) will be permanently deleted")
+        }
+        return parts.joined(separator: ". ") + "."
     }
     
     // MARK: - Capture Confirmation Toast
