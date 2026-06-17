@@ -46,6 +46,10 @@ final class CameraViewModel: NSObject, ObservableObject {
     @Published var currentGPSLatitude: Double = 0
     @Published var currentGPSLongitude: Double = 0
     
+    /// Fires when a capture completes and is ready in the timeline
+    @Published var lastCompletedCapture: CapturedVideo?
+    @Published var showCaptureConfirmation = false
+    
     // MARK: - AVFoundation Properties
     let captureSession = AVCaptureSession()
     private var videoDeviceInput: AVCaptureDeviceInput?
@@ -433,6 +437,18 @@ final class CameraViewModel: NSObject, ObservableObject {
             
             self.recordedVideos.append(video)
             self.isProcessingOverlay = false
+            
+            // Trigger capture confirmation toast
+            self.lastCompletedCapture = video
+            self.showCaptureConfirmation = true
+            
+            // Auto-dismiss after 3 seconds
+            Task {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                await MainActor.run {
+                    self.showCaptureConfirmation = false
+                }
+            }
         }
     }
     
@@ -444,6 +460,31 @@ final class CameraViewModel: NSObject, ObservableObject {
         }
         stopGPSTimer()
         locationManager.stopUpdatingLocation()
+    }
+    
+    // MARK: - Evidence Management
+    
+    /// Delete a recorded video and its associated files
+    /// - Parameter video: The CapturedVideo to delete
+    func deleteEvidence(_ video: CapturedVideo) {
+        let fileURL = URL(fileURLWithPath: video.filePath)
+        storageManager.deleteVideo(at: fileURL)
+        
+        withAnimation {
+            recordedVideos.removeAll { $0.id == video.id }
+        }
+    }
+    
+    /// Delete all recorded evidence
+    func deleteAllEvidence() {
+        for video in recordedVideos {
+            let fileURL = URL(fileURLWithPath: video.filePath)
+            storageManager.deleteVideo(at: fileURL)
+        }
+        
+        withAnimation {
+            recordedVideos.removeAll()
+        }
     }
 }
 

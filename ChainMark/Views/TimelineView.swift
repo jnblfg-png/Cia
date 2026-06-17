@@ -7,30 +7,43 @@ struct TimelineView: View {
     @EnvironmentObject private var cameraViewModel: CameraViewModel
     @State private var selectedVideo: CapturedVideo?
     @State private var showDetail = false
-    @State private var searchText = ""
+    @State private var showDeleteAlert = false
+    @State private var videoToDelete: CapturedVideo?
+    @State private var showDeleteAllAlert = false
     
     var body: some View {
         NavigationView {
             ZStack {
-                Color.black.edgesIgnoringSafeArea(.all)
+                AppColors.background.edgesIgnoringSafeArea(.all)
                 
                 if cameraViewModel.recordedVideos.isEmpty {
                     emptyStateView
                 } else {
                     videoList
                 }
+                
+                // Capture confirmation toast
+                if cameraViewModel.showCaptureConfirmation, let video = cameraViewModel.lastCompletedCapture {
+                    captureConfirmationToast(video: video)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .zIndex(100)
+                }
             }
-            .navigationTitle("Evidence Timeline")
-            .navigationBarTitleTextColor(.white)
+            .navigationTitle("Evidence")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    HStack(spacing: 12) {
+                    HStack(spacing: AppSpacing.medium) {
                         sealStatusBadge
                         if !cameraViewModel.recordedVideos.isEmpty {
-                            Button(action: { showCamera = true }) {
-                                Image(systemName: "camera.fill")
-                                    .foregroundColor(.white)
+                            Menu {
+                                Button(action: { showDeleteAllAlert = true }, role: .destructive) {
+                                    Label("Delete All Evidence", systemImage: "trash")
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                                    .foregroundColor(AppColors.secondary)
                             }
+                            .evidenceAction(label: "More options")
                         }
                     }
                 }
@@ -40,11 +53,73 @@ struct TimelineView: View {
                     VideoDetailView(video: video)
                 }
             }
+            .alert("Delete Evidence", isPresented: $showDeleteAlert, presenting: videoToDelete) { video in
+                Button("Cancel", role: .cancel) { }
+                Button("Delete", role: .destructive) {
+                    withAnimation { cameraViewModel.deleteEvidence(video) }
+                }
+            } message: { video in
+                Text("Delete \"\(video.fileName)\"? The video and metadata will be permanently removed.")
+            }
+            .alert("Delete All Evidence", isPresented: $showDeleteAllAlert) {
+                Button("Cancel", role: .cancel) { }
+                Button("Delete All", role: .destructive) {
+                    withAnimation { cameraViewModel.deleteAllEvidence() }
+                }
+            } message: {
+                Text("This will permanently delete all captured evidence.")
+            }
         }
         .preferredColorScheme(.dark)
+        .accentColor(AppColors.accent)
     }
     
-    @State private var showCamera = false
+    // MARK: - Capture Confirmation Toast
+    
+    @ViewBuilder
+    private func captureConfirmationToast(video: CapturedVideo) -> some View {
+        VStack(spacing: AppSpacing.small) {
+            HStack(spacing: AppSpacing.medium) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(AppColors.success)
+                    .font(.system(size: AppTypography.title3))
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Evidence Captured")
+                        .font(.system(size: AppTypography.subheadline, weight: .semibold))
+                        .foregroundColor(AppColors.primary)
+                    Text(video.formattedDuration + " · " + (video.isFullySealed ? "Sealed & Signed" : "Sealed"))
+                        .font(.system(size: AppTypography.footnote))
+                        .foregroundColor(AppColors.secondary)
+                }
+                
+                Spacer()
+                
+                Button(action: { showDetail = true; selectedVideo = video }) {
+                    Text("View")
+                        .font(.system(size: AppTypography.subheadline, weight: .semibold))
+                        .foregroundColor(AppColors.accent)
+                }
+            }
+            .padding(.horizontal, AppSpacing.large)
+            .padding(.vertical, AppSpacing.medium)
+            .background(AppColors.surfaceDeep.opacity(0.95))
+            .cornerRadius(AppSpacing.radiusMedium)
+            .overlay(
+                RoundedRectangle(cornerRadius: AppSpacing.radiusMedium)
+                    .stroke(AppColors.success.opacity(0.3), lineWidth: 1)
+            )
+            .shadow(color: AppColors.shadowDark, radius: 10)
+            .padding(.horizontal, AppSpacing.paddingInline)
+            .padding(.top, AppSpacing.small)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            
+            Spacer()
+        }
+        .onTapGesture {
+            withAnimation { cameraViewModel.showCaptureConfirmation = false }
+        }
+    }
     
     // MARK: - Empty State
     
@@ -83,8 +158,23 @@ struct TimelineView: View {
                 ForEach(cameraViewModel.recordedVideos) { video in
                     TimelineRow(video: video)
                         .onTapGesture {
+                            let impact = UIImpactFeedbackGenerator(style: .light)
+                            impact.impactOccurred()
                             selectedVideo = video
                             showDetail = true
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                withAnimation { cameraViewModel.deleteEvidence(video) }
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            Button(action: { quickExport(video) }) {
+                                Label("Export", systemImage: "square.and.arrow.up")
+                            }
+                            .tint(AppColors.accent)
                         }
                         .contextMenu {
                             Button(action: {
@@ -238,46 +328,111 @@ struct VideoDetailView: View {
     let video: CapturedVideo
     @Environment(\.dismiss) private var dismiss
     @State private var metadataJSON: String?
-    @State private var showShareSheet = false
+    @State private var isPlaying = false
+    @State private var player: AVPlayer?
     
     var body: some View {
         NavigationView {
-            ZStack {
-                Color.black.edgesIgnoringSafeArea(.all)
-                
-                ScrollView {
-                    VStack(spacing: 20) {
-                        // Video info card
-                        videoInfoCard
-                        
-                        // Cryptographic seal card
-                        cryptoSealCard
-                        
-                        // GPS data card
-                        gpsCard
-                        
-                        // Metadata section
-                        metadataSection
-                        
-                        // Export button
-                        exportButton
-                    }
-                    .padding()
+            ScrollView {
+                VStack(spacing: AppSpacing.large) {
+                    videoInfoCard
+                    videoPlayerCard
+                    cryptoSealCard
+                    gpsCard
+                    metadataSection
+                    exportButton
                 }
+                .padding()
             }
+            .background(AppColors.background.edgesIgnoringSafeArea(.all))
             .navigationTitle("Evidence Detail")
-            .navigationBarTitleTextColor(.white)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .foregroundColor(.blue)
+                    Button("Done") {
+                        let impact = UIImpactFeedbackGenerator(style: .light)
+                        impact.impactOccurred()
+                        player?.pause()
+                        dismiss()
+                    }
+                    .foregroundColor(AppColors.accent)
+                    .fontWeight(.semibold)
                 }
             }
-            .onAppear {
-                loadMetadata()
-            }
+            .onAppear { loadMetadata() }
+            .onDisappear { player?.pause(); player = nil }
         }
         .preferredColorScheme(.dark)
+    }
+    
+    // MARK: - Video Player Card
+    
+    private var videoPlayerCard: some View {
+        VStack(spacing: AppSpacing.medium) {
+            // Video preview
+            ZStack {
+                if let player = player {
+                    VideoPlayerView(player: player, isPlaying: $isPlaying)
+                        .frame(height: 200)
+                        .cornerRadius(AppSpacing.radiusMedium)
+                } else {
+                    RoundedRectangle(cornerRadius: AppSpacing.radiusMedium)
+                        .fill(AppColors.surfaceDeep)
+                        .frame(height: 200)
+                        .overlay {
+                            VStack(spacing: AppSpacing.small) {
+                                Image(systemName: "video.fill")
+                                    .font(.system(size: 32))
+                                    .foregroundColor(AppColors.tertiary)
+                                Text("Video preview unavailable")
+                                    .font(.system(size: AppTypography.footnote))
+                                    .foregroundColor(AppColors.tertiary)
+                            }
+                        }
+                }
+            }
+            
+            // Playback controls
+            if player != nil {
+                HStack(spacing: AppSpacing.large) {
+                    Button(action: {
+                        player?.seek(to: .zero)
+                        player?.pause()
+                        isPlaying = false
+                    }) {
+                        Image(systemName: "backward.fill")
+                            .font(.system(size: AppTypography.title3))
+                    }
+                    
+                    Button(action: {
+                        if isPlaying {
+                            player?.pause()
+                        } else {
+                            player?.play()
+                        }
+                        isPlaying.toggle()
+                    }) {
+                        Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                            .font(.system(size: 40))
+                            .foregroundColor(AppColors.accent)
+                    }
+                    
+                    Button(action: {
+                        player?.pause()
+                        isPlaying = false
+                        player?.seek(to: .zero)
+                    }) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: AppTypography.title3))
+                    }
+                }
+                .foregroundColor(AppColors.secondary)
+            }
+        }
+        .cardStyle()
+        .onAppear {
+            let fileURL = URL(fileURLWithPath: video.filePath)
+            player = VideoPlaybackManager.player(for: fileURL)
+        }
     }
     
     // MARK: - Video Info Card
