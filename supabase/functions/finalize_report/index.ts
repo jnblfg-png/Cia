@@ -82,7 +82,7 @@ serve(async (req: Request) => {
       });
     }
 
-    // Update report to finalized
+    // Update report to finalized — atomic write
     const now = new Date().toISOString();
     const { data: finalizedReport, error: updateError } = await supabaseAdmin
       .from("reports")
@@ -102,8 +102,17 @@ serve(async (req: Request) => {
       });
     }
 
-    // Create custody log entry for finalization
-    // Get the last custody entry for a relevant evidence item to chain from
+    // Create audit trail via the case's evidence items (valid FK to evidence_items)
+    // Find the first evidence item in this case to anchor the finalization audit
+    const { data: caseEvidence } = await supabaseAdmin
+      .from("evidence_items")
+      .select("id")
+      .eq("case_id", report.case_id)
+      .eq("agency_id", profile.agency_id)
+      .limit(1)
+      .single();
+
+    // Get the last custody entry globally for hash chaining
     const { data: lastCustody } = await supabaseAdmin
       .from("custody_log")
       .select("current_hash")
@@ -111,30 +120,45 @@ serve(async (req: Request) => {
       .limit(1)
       .single();
 
-    const previousHash = lastCustody?.current_hash ?? "0000000000000000000000000000000000000000000000000000000000000000";
-    const hashInput = `${previousHash}|finalized|${user.id}|${now}|${report.id}`;
-    const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(hashInput));
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const currentHash = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+    if (caseEvidence) {
+      const previousHash = lastCustody?.current_hash ?? "0000000000000000000000000000000000000000000000000000000000000000";
+      const hashInput = `${previousHash}|finalized|${user.id}|${now}|${report.id}|${report.case_id}`;
+      const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(hashInput));
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const currentHash = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
 
-    const { data: custodyEntry } = await supabaseAdmin
-      .from("custody_log")
-      .insert({
-        evidence_id: payload.report_id,  // Using report_id as pseudo-evidence for report finalization
-        agency_id: profile.agency_id,
-        event_type: "finalized",
-        performed_by: user.id,
-        previous_hash: previousHash,
-        current_hash: currentHash,
-        payload: {
-          report_id: report.id,
-          case_id: report.case_id,
-          finalized_by: user.id,
-          finalized_at: now,
-        },
-      })
-      .select()
-      .single();
+      const { error: custodyError } = await supabaseAdmin
+        .from("custody_log")
+        .insert({
+          evidence_id: caseEvidence.id,
+          agency_id: profile.agency_id,
+          event_type: "finalized",
+          performed_by: user.id,
+          previous_hash: previousHash,
+          current_hash: currentHash,
+          payload: {
+            report_id: report.id,
+            case_id: report.case_id,
+            finalized_by: user.id,
+            finalized_at: now,
+            type: "report_finalization",
+          },
+        })
+        .select()
+        .single();
+
+      if (custodyError) {
+        // Rollback: revert the report status to draft if custody write fails
+        await supabaseAdmin
+          .from("reports")
+          .update({ status: "draft", finalized_at: null, finalized_by: null })
+          .eq("id", payload.report_id);
+
+        return new Response(JSON.stringify({ error: "Audit trail creation failed — report update reverted" }), {
+          status: 500, headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
 
     return new Response(
       JSON.stringify({
