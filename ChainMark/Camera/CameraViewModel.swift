@@ -78,6 +78,10 @@ final class CameraViewModel: NSObject, ObservableObject {
     
     // MARK: - Storage
     private let storageManager: SecureStorageManager
+    private let tombstoneStore = TombstoneStore()
+    
+    /// Published list of withdrawn (tombstoned) sealed evidence IDs
+    @Published var withdrawnEvidenceIDs: Set<UUID> = []
     
     // MARK: - Initialization
     override init() {
@@ -464,27 +468,82 @@ final class CameraViewModel: NSObject, ObservableObject {
     
     // MARK: - Evidence Management
     
-    /// Delete a recorded video and its associated files
-    /// - Parameter video: The CapturedVideo to delete
-    func deleteEvidence(_ video: CapturedVideo) {
+    /// Whether evidence is sealed (has SHA-256 hash) and requires tombstone on deletion
+    private func isSealed(_ video: CapturedVideo) -> Bool {
+        video.sha256Hash != nil
+    }
+    
+    /// Delete evidence respecting the owner's policy:
+    /// - UNSEALED (no hash): hard delete file + metadata + remove from list
+    /// - SEALED (has hash): record withdrawal tombstone, remove video file for privacy,
+    ///   but preserve integrity data in tombstone. Hide from active timeline.
+    /// - Parameter video: The CapturedVideo to delete or withdraw
+    /// - Returns: True if the item was hard-deleted, false if tombstoned
+    @discardableResult
+    func deleteEvidence(_ video: CapturedVideo) -> Bool {
         let fileURL = URL(fileURLWithPath: video.filePath)
-        storageManager.deleteVideo(at: fileURL)
         
-        withAnimation {
-            recordedVideos.removeAll { $0.id == video.id }
+        if isSealed(video) {
+            // SEALED: record tombstone, delete file, withdraw from timeline
+            tombstoneStore.addTombstone(for: video)
+            storageManager.deleteVideo(at: fileURL)
+            
+            withAnimation {
+                recordedVideos.removeAll { $0.id == video.id }
+                withdrawnEvidenceIDs.insert(video.id)
+            }
+            
+            print("EvidenceManager: Sealed item \(video.fileName) withdrawn (tombstone recorded)")
+            return false  // tombstoned, not hard-deleted
+        } else {
+            // UNSEALED: hard delete — file + metadata gone forever
+            storageManager.deleteVideo(at: fileURL)
+            
+            withAnimation {
+                recordedVideos.removeAll { $0.id == video.id }
+            }
+            
+            print("EvidenceManager: Unsealed item \(video.fileName) hard-deleted")
+            return true  // hard-deleted
         }
     }
     
-    /// Delete all recorded evidence
+    /// Delete/withdraw all evidence respecting the owner's policy:
+    /// - Unsealed items: hard-deleted
+    /// - Sealed items: withdrawn (tombstone recorded)
     func deleteAllEvidence() {
+        var hardDeleted = 0
+        var withdrawn = 0
+        
         for video in recordedVideos {
             let fileURL = URL(fileURLWithPath: video.filePath)
-            storageManager.deleteVideo(at: fileURL)
+            
+            if isSealed(video) {
+                tombstoneStore.addTombstone(for: video)
+                storageManager.deleteVideo(at: fileURL)
+                withdrawnEvidenceIDs.insert(video.id)
+                withdrawn += 1
+            } else {
+                storageManager.deleteVideo(at: fileURL)
+                hardDeleted += 1
+            }
         }
         
         withAnimation {
             recordedVideos.removeAll()
         }
+        
+        print("EvidenceManager: Bulk action — \(hardDeleted) hard-deleted, \(withdrawn) withdrawn")
+    }
+    
+    /// Number of withdrawn (tombstoned) items
+    var tombstoneCount: Int {
+        tombstoneStore.count
+    }
+    
+    /// Check if a specific evidence item has been withdrawn
+    func isWithdrawn(_ video: CapturedVideo) -> Bool {
+        withdrawnEvidenceIDs.contains(video.id)
     }
 }
 
