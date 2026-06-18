@@ -11,6 +11,11 @@
 -- Returns JSONB with evidence and custody_log entries on success.
 -- Rolls back the entire transaction if either insert fails.
 
+-- NOTE: All REQUIRED parameters (no default) MUST come before any parameter that
+-- has a default — Postgres rejects a non-defaulted param after a defaulted one.
+-- p_captured_at is required, so it is grouped with the other required params.
+-- The only caller (register_evidence edge function) invokes this with NAMED
+-- arguments, so parameter ORDER does not affect the call site.
 CREATE OR REPLACE FUNCTION public.register_evidence_atomic(
     p_agency_id              UUID,
     p_case_id                UUID,
@@ -18,13 +23,13 @@ CREATE OR REPLACE FUNCTION public.register_evidence_atomic(
     p_media_type             TEXT,
     p_file_path              TEXT,
     p_file_hash              TEXT,
+    p_captured_at            TIMESTAMPTZ,
     p_file_size              BIGINT DEFAULT NULL,
     p_mime_type              TEXT DEFAULT NULL,
     p_gps_latitude           DOUBLE PRECISION DEFAULT NULL,
     p_gps_longitude          DOUBLE PRECISION DEFAULT NULL,
     p_gps_accuracy           DOUBLE PRECISION DEFAULT NULL,
     p_gps_source             TEXT DEFAULT NULL,
-    p_captured_at            TIMESTAMPTZ,
     p_device_clock_time      TIMESTAMPTZ DEFAULT NULL,
     p_rfc3161_timestamp      TEXT DEFAULT NULL,
     p_secure_enclave_signature TEXT DEFAULT NULL,
@@ -100,13 +105,13 @@ $$;
 
 -- Grant execute to authenticated users and service_role
 GRANT EXECUTE ON FUNCTION public.register_evidence_atomic(
-    UUID, UUID, UUID, TEXT, TEXT, TEXT,
+    UUID, UUID, UUID, TEXT, TEXT, TEXT, TIMESTAMPTZ,
     BIGINT, TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION,
-    TEXT, TIMESTAMPTZ, TIMESTAMPTZ, TEXT, TEXT, JSONB
+    TEXT, TIMESTAMPTZ, TEXT, TEXT, JSONB
 ) TO authenticated;
 
 GRANT EXECUTE ON FUNCTION public.register_evidence_atomic(
-    UUID, UUID, UUID, TEXT, TEXT, TEXT,
+    UUID, UUID, UUID, TEXT, TEXT, TEXT, TIMESTAMPTZ,
     BIGINT, TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION,
-    TEXT, TIMESTAMPTZ, TIMESTAMPTZ, TEXT, TEXT, JSONB
+    TEXT, TIMESTAMPTZ, TEXT, TEXT, JSONB
 ) TO service_role;
