@@ -1,6 +1,5 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
-import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
 
 interface RegisterEvidencePayload {
   case_id: string;
@@ -100,85 +99,45 @@ serve(async (req: Request) => {
       });
     }
 
-    // Insert the evidence item
-    const { data: evidence, error: evidenceError } = await supabaseAdmin
-      .from("evidence_items")
-      .insert({
-        agency_id: profile.agency_id,
-        case_id: payload.case_id,
-        captured_by: user.id,
-        media_type: payload.media_type,
-        file_path: payload.file_path,
-        file_hash: payload.file_hash,
-        file_size: payload.file_size ?? null,
-        mime_type: payload.mime_type ?? null,
-        gps_latitude: payload.gps_latitude ?? null,
-        gps_longitude: payload.gps_longitude ?? null,
-        gps_accuracy: payload.gps_accuracy ?? null,
-        gps_source: payload.gps_source ?? null,
-        captured_at: payload.captured_at,
-        device_clock_time: payload.device_clock_time ?? null,
-        rfc3161_timestamp: payload.rfc3161_timestamp ?? null,
-        secure_enclave_signature: payload.secure_enclave_signature ?? null,
-        metadata: payload.metadata ?? {},
-        is_sealed: true,
-      })
-      .select()
-      .single();
+    // Insert evidence + custody_log atomically via stored procedure
+    // This runs in a single DB transaction — all-or-nothing
+    const { data: result, error: rpcError } = await supabaseAdmin.rpc(
+      "register_evidence_atomic",
+      {
+        p_agency_id: profile.agency_id,
+        p_case_id: payload.case_id,
+        p_captured_by: user.id,
+        p_media_type: payload.media_type,
+        p_file_path: payload.file_path,
+        p_file_hash: payload.file_hash,
+        p_file_size: payload.file_size ?? null,
+        p_mime_type: payload.mime_type ?? null,
+        p_gps_latitude: payload.gps_latitude ?? null,
+        p_gps_longitude: payload.gps_longitude ?? null,
+        p_gps_accuracy: payload.gps_accuracy ?? null,
+        p_gps_source: payload.gps_source ?? null,
+        p_captured_at: payload.captured_at,
+        p_device_clock_time: payload.device_clock_time ?? null,
+        p_rfc3161_timestamp: payload.rfc3161_timestamp ?? null,
+        p_secure_enclave_signature: payload.secure_enclave_signature ?? null,
+        p_metadata: payload.metadata ?? {},
+      }
+    );
 
-    if (evidenceError) {
-      return new Response(JSON.stringify({ error: `Failed to register evidence: ${evidenceError.message}` }), {
-        status: 500, headers: { "Content-Type": "application/json" },
+    if (rpcError || !result) {
+      return new Response(JSON.stringify({
+        error: "Failed to register evidence atomically",
+        detail: rpcError?.message ?? "unknown error",
+      }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
       });
-    }
-
-    // Create first custody_log entry
-    const zeroHash = "0000000000000000000000000000000000000000000000000000000000000000";
-    const hashInput = `${zeroHash}|captured|${user.id}|${payload.captured_at}|${payload.file_hash}`;
-    const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(hashInput));
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const firstHash = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
-
-    const { data: custodyEntry, error: custodyError } = await supabaseAdmin
-      .from("custody_log")
-      .insert({
-        evidence_id: evidence.id,
-        agency_id: profile.agency_id,
-        event_type: "captured",
-        performed_by: user.id,
-        previous_hash: zeroHash,
-        current_hash: firstHash,
-        payload: {
-          device_info: payload.metadata?.device ?? null,
-          app_version: payload.metadata?.app_version ?? null,
-          gps_accuracy: payload.gps_accuracy ?? null,
-          media_type: payload.media_type,
-          file_hash: payload.file_hash,
-        },
-      })
-      .select()
-      .single();
-
-    if (custodyError) {
-      console.error("Failed to create custody log entry:", custodyError);
-      // Evidence was created but custody log failed — flag for audit
     }
 
     return new Response(
       JSON.stringify({
-        evidence: {
-          id: evidence.id,
-          case_id: evidence.case_id,
-          media_type: evidence.media_type,
-          file_hash: evidence.file_hash,
-          captured_at: evidence.captured_at,
-          is_sealed: evidence.is_sealed,
-        },
-        custody: custodyEntry ? {
-          entry_id: custodyEntry.id,
-          event_type: custodyEntry.event_type,
-          current_hash: custodyEntry.current_hash,
-        } : null,
+        evidence: result.evidence,
+        custody: result.custody,
       }),
       { status: 201, headers: { "Content-Type": "application/json" } }
     );
