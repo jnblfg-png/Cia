@@ -50,7 +50,6 @@
         <string>video-camera</string>
         <string>microphone</string>
         <string>gps</string>
-        <string>arkit</string>
     </array>
     <key>UIBackgroundModes</key>
     <array>
