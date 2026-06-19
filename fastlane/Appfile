@@ -1,0 +1,25 @@
+# Appfile — Fastlane identity configuration for ChainMark/Evidia
+# ---------------------------------------------------------------
+# This file tells Fastlane WHICH app and WHICH Apple account to use.
+# Fill in the three placeholders below once the Apple Developer account exists.
+#
+# Where to find each value:
+#   app_identifier  -> the bundle ID you register in App Store Connect.
+#                      Must match PRODUCT_BUNDLE_IDENTIFIER in the Xcode project
+#                      (currently "com.chainmark.app" in Info.plist).
+#   apple_id        -> the Apple ID email used for the Apple Developer Program.
+#   team_id         -> the 10-character Apple Developer TEAM ID.
+#                      Find it at https://developer.apple.com/account → Membership.
+#   itc_team_id     -> App Store Connect team ID (usually auto-detected; only set
+#                      if you belong to multiple teams and Fastlane prompts you).
+
+app_identifier("com.chainmark.app")     # TODO: confirm/replace bundle identifier
+apple_id("REPLACE_WITH_APPLE_ID_EMAIL") # TODO: Apple Developer account email
+team_id("REPLACE_WITH_TEAM_ID")         # TODO: 10-char Apple Developer Team ID
+
+# itc_team_id("REPLACE_WITH_ASC_TEAM_ID")  # Optional: uncomment if prompted
+
+# ---------------------------------------------------------------
+# SECURITY NOTE: do NOT commit an App Store Connect API key (.p8) or app-specific
+# password to git. Provide them at runtime via environment variables — see the
+# `beta` lane in the Fastfile and TESTFLIGHT.md for the recommended setup.
